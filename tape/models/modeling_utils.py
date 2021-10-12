@@ -898,11 +898,18 @@ class ValuePredictionHeadPrositFragmentation(nn.Module):
         self.cosSim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
         self.delta = delta
 
+    def imputeDelta(self, true: torch.Tensor, true_masked: torch.Tensor, delta: float):
+        """Impute delta for absent peaks"""
+        mask = ~(true==0)
+        delta_m = (delta / (true > 0).sum(1))[:,None].type(true_masked.dtype)
+        true_masked = torch.where(mask, true_masked, delta_m)
+        return true_masked
+
     def masked_spectral_distance(self, true, pred, delta, epsilon = torch.finfo(torch.float16).eps):
         pred_masked = ((true + 1) * pred) / (true + 1 + epsilon)
         true_masked = ((true + 1) * true) / (true + 1 + epsilon)
-        #Add a constant on non-existing peaks to punish false-positives
-        true_masked[true==0] = delta
+        #Impute value for absent peaks
+        true_masked = self.imputeDelta(true, true_masked, delta)
         sim = self.cosSim(pred_masked, true_masked)
         product_clipped = torch.clamp(sim, min=-(1 - epsilon), max=(1 - epsilon))
         arccos = torch.acos(product_clipped)
