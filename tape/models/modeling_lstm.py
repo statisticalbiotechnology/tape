@@ -12,6 +12,12 @@ from .modeling_utils import SequenceToSequenceClassificationHead
 from .modeling_utils import PairwiseContactPredictionHead
 from ..registry import registry
 
+from .modeling_utils import ValuePredictionHeadPrositFragmentation
+from .modeling_utils import SimpleLinear
+from .modeling_bert import ProteinBertPooler, ProteinBertEncoder
+
+import ipdb
+
 logger = logging.getLogger(__name__)
 
 
@@ -113,8 +119,8 @@ class ProteinLSTMEncoder(nn.Module):
 
     def reverse_sequence(self, sequence, input_mask):
         if input_mask is None:
-            idx = torch.arange(sequence.size(1) - 1, -1, -1)
-            reversed_sequence = sequence.index_select(1, idx, device=sequence.device)
+            idx = torch.arange(sequence.size(1) - 1, -1, -1, device=sequence.device)
+            reversed_sequence = sequence.index_select(1, idx)
         else:
             sequence_lengths = input_mask.sum(1)
             reversed_sequence = []
@@ -302,3 +308,55 @@ class ProteinLSTMForContactPrediction(ProteinLSTMAbstractModel):
         outputs = self.predict(sequence_output, protein_length, targets) + outputs[2:]
         # (loss), prediction_scores, (hidden_states), (attentions)
         return outputs
+
+
+@registry.register_task_model('prosit_fragmentation', 'lstm')
+class ProteinBertForValuePredictionFragmentationProsit(ProteinLSTMAbstractModel):
+
+    def __init__(self, config):
+        super().__init__(config)
+
+        self.lstm = ProteinLSTMModel(config)
+        #Hardcode extra dim and output for now
+        self.predict = ValuePredictionHeadPrositFragmentation(config.hidden_size, 174, config.final_layer_dropout_prob, config.delta)
+
+        self.init_weights()
+        self.meta_dense = SimpleLinear(7, config.hidden_size * 2, config.final_layer_dropout_prob, True)
+
+        
+        tmp_config = type('tmp_config', (object,), dict(vars(config), input_size=config.hidden_size * 2))
+        
+
+        
+
+        self.layer = ProteinLSTMEncoder(tmp_config) 
+
+        self.pooler = ProteinLSTMPooler(tmp_config)
+
+
+    def forward(self, input_ids, collision_energy, charge, input_mask=None, targets=None):
+
+        outputs = self.lstm(input_ids, input_mask=input_mask)
+
+        sequence_output, pooled_output = outputs[:2]
+
+        meta_data = torch.cat((charge, collision_energy[:,None]), dim=1)
+
+        
+
+        meta = self.meta_dense(meta_data)
+
+        x = meta[:,None,:] * sequence_output
+
+        
+
+        x = self.layer(x)
+        
+        
+        pooled_output = self.pooler(x[1])
+
+
+        outputs = self.predict(pooled_output, targets) + outputs[2:]
+
+        return outputs
+
